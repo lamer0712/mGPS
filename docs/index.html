@@ -1,0 +1,7 @@
+<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>mGPS</title>
+<style>body{font:18px sans-serif;max-width:620px;margin:24px auto;padding:0 16px;background:#101318;color:#fff}input,button{box-sizing:border-box;width:100%;font-size:18px;padding:12px;margin:6px 0}button{font-size:20px}#s{color:#8bc34a;white-space:pre-wrap}</style>
+<h1>mGPS 전송</h1><p>AAOS 앱에 표시된 Tailcat 주소를 입력하거나 QR 링크로 접속하세요.</p>
+<input id="addr" placeholder="tc... 주소"><input id="port" type="number" value="8787">
+<button onclick="start()">GPS 권한 허용 후 전송 시작</button><button onclick="stop()">중지</button><p id="s">준비 중…</p>
+<p>위도 <span id="lat">-</span> · 경도 <span id="lon">-</span></p>
+<script src="wasm_exec.js"></script><script src="app.js"></script>

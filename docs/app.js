@@ -1,0 +1,9 @@
+let watchId = null;
+const qs = new URLSearchParams(location.search);
+if (qs.get('addr')) document.getElementById('addr').value = qs.get('addr');
+if (qs.get('port')) document.getElementById('port').value = qs.get('port');
+const status = t => document.getElementById('s').textContent = t;
+const wasmReady = (async()=>{const go=new Go();let result;try{result=await WebAssembly.instantiateStreaming(fetch('tailcat.wasm'),go.importObject)}catch(e){const r=await fetch('tailcat.wasm');result=await WebAssembly.instantiate(await r.arrayBuffer(),go.importObject)}go.run(result.instance);for(let i=0;i<100;i++){if(window.tailcatDial)return;await new Promise(r=>setTimeout(r,100))}throw new Error('Tailcat WASM 준비 시간 초과')})();
+async function sendLocation(p){await wasmReady;const c=p.coords,body=JSON.stringify({lat:c.latitude,lon:c.longitude,altitude:c.altitude||0,speed:c.speed||0,heading:c.heading||0,accuracy:c.accuracy||10});const conn=await tailcatDial({addr:document.getElementById('addr').value.trim(),port:Number(document.getElementById('port').value)||8787,derpMapURL:'https://tailcat.dev/derpmap.json'});const req=`POST /api/location HTTP/1.1\r\nHost: mockgps\r\nContent-Type: application/json\r\nContent-Length: ${new TextEncoder().encode(body).length}\r\nConnection: close\r\n\r\n${body}`;await conn.write(new TextEncoder().encode(req));while(await conn.read()!==null){}conn.close();lat.textContent=c.latitude.toFixed(6);lon.textContent=c.longitude.toFixed(6);status('전송 중 · '+new Date().toLocaleTimeString())}
+function start(){if(!addr.value.trim())return status('Tailcat 주소를 입력하세요.');if(!navigator.geolocation)return status('이 브라우저는 GPS를 지원하지 않습니다.');watchId=navigator.geolocation.watchPosition(sendLocation,e=>status('GPS 오류: '+e.message),{enableHighAccuracy:true,maximumAge:1000,timeout:10000});status('GPS 권한을 기다리는 중…')}
+function stop(){if(watchId!==null)navigator.geolocation.clearWatch(watchId);watchId=null;status('중지됨')}
