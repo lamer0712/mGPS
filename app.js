@@ -1,4 +1,7 @@
 let watchId = null;
+const query = new URLSearchParams(location.search);
+if (query.get('addr')) document.getElementById('addr').value = query.get('addr');
+if (query.get('port')) document.getElementById('port').value = query.get('port');
 let tailcatConn = null, connecting = null, responseBuffer = new Uint8Array(0), sending = false;
 const wasmReady = (async()=>{const go=new Go();let result;try{result=await WebAssembly.instantiateStreaming(fetch('tailcat.wasm'),go.importObject)}catch(e){const r=await fetch('tailcat.wasm');result=await WebAssembly.instantiate(await r.arrayBuffer(),go.importObject)}go.run(result.instance);for(let i=0;i<100;i++){if(window.tailcatDial)return;await new Promise(r=>setTimeout(r,100))}throw new Error('Tailcat WASM 준비 시간 초과')})();
 const status = t => document.getElementById('s').textContent = t;
