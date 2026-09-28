@@ -15,6 +15,8 @@ let responseBuffer = new Uint8Array(0);
 let sending = false;
 let pendingPosition = null;
 let running = false;
+let sessionId = null;
+let generation = 0;
 let lastFixAt = 0;
 let lastSuccessAt = 0;
 let lastFixTimestamp = null;
@@ -57,20 +59,28 @@ function loadTailcat() {
 }
 
 async function getConnection() {
+  const attemptGeneration = generation;
   await loadTailcat();
+  if (!running || generation !== attemptGeneration) throw new Error('연결이 취소되었습니다.');
   if (connection) return connection;
   if (!connecting) {
-    connecting = tailcatDial({
+    const dial = tailcatDial({
       addr: addressInput.value.trim(),
       port: 8787,
       derpMapURL: 'https://tailcat.dev/derpmap.json'
     }).then(result => {
+      if (!running || generation !== attemptGeneration) {
+        result.close();
+        throw new Error('연결이 취소되었습니다.');
+      }
       connection = result;
       connectCount++;
       responseBuffer = new Uint8Array(0);
       updateMetrics();
       return result;
-    }).finally(() => { connecting = null; });
+    });
+    const pending = dial.finally(() => { if (connecting === pending) connecting = null; });
+    connecting = pending;
   }
   return connecting;
 }
@@ -100,10 +110,12 @@ async function readResponse(stream) {
       if (responseBuffer.length >= total) {
         responseBuffer = responseBuffer.slice(total);
         if (!/^HTTP\/1\.1 200\b/.test(header)) {
-          const error = new Error(/^HTTP\/1\.1 403\b/.test(header)
-            ? 'AAOS에서 mGPS를 모의 위치 앱으로 선택하세요.'
+          const preempted = /^HTTP\/1\.1 409\b/.test(header);
+          const error = new Error(preempted ? '다른 휴대폰이 송신을 시작해 이 휴대폰의 전송이 중지됐습니다.'
+            : /^HTTP\/1\.1 403\b/.test(header) ? 'AAOS에서 mGPS를 모의 위치 앱으로 선택하세요.'
             : `서버 오류: ${header.split('\r\n')[0]}`);
           error.keepConnection = true;
+          error.preempted = preempted;
           throw error;
         }
         return;
@@ -113,6 +125,16 @@ async function readResponse(stream) {
     if (chunk === null) throw new Error('Tailcat 연결이 종료되었습니다.');
     responseBuffer = appendBytes(responseBuffer, chunk);
   }
+}
+
+async function post(path, body, expectedGeneration) {
+  const stream = await getConnection();
+  if (!running || generation !== expectedGeneration) return false;
+  const bodyBytes = encoder.encode(body);
+  const request = `POST ${path} HTTP/1.1\r\nHost: mockgps\r\nX-mGPS-Session: ${sessionId}\r\nContent-Type: application/json\r\nContent-Length: ${bodyBytes.length}\r\nConnection: keep-alive\r\n\r\n${body}`;
+  await stream.write(encoder.encode(request));
+  await readResponse(stream);
+  return true;
 }
 
 function onPosition(position) {
@@ -131,6 +153,7 @@ function onPosition(position) {
 
 async function transmit() {
   if (!running || sending || !pendingPosition) return;
+  const sendGeneration = generation;
   sending = true;
   try {
     while (running && pendingPosition) {
@@ -142,15 +165,10 @@ async function transmit() {
         altitude: coords.altitude || 0, speed: coords.speed || 0,
         heading: coords.heading || 0, accuracy: coords.accuracy || 10
       });
-      const bodyBytes = encoder.encode(body);
-      status('GPS 확인됨 · Tailcat 연결 및 전송 중…');
+      status('GPS 확인됨 · 전송 중…');
       const started = Date.now();
-      const stream = await getConnection();
-      if (!running) return;
-      const request = `POST /api/location HTTP/1.1\r\nHost: mockgps\r\nContent-Type: application/json\r\nContent-Length: ${bodyBytes.length}\r\nConnection: keep-alive\r\n\r\n${body}`;
-      await stream.write(encoder.encode(request));
-      await readResponse(stream);
-      if (!running) return;
+      if (!await post('/api/location', body, sendGeneration)) return;
+      if (!running || generation !== sendGeneration) return;
       lastLatency = Date.now() - started;
       lastSuccessAt = Date.now();
       sentCount++;
@@ -158,6 +176,12 @@ async function transmit() {
       updateMetrics();
     }
   } catch (error) {
+    if (generation !== sendGeneration) return;
+    if (error.preempted) {
+      stop();
+      status(error.message);
+      return;
+    }
     if (!error.keepConnection) {
       if (connection) connection.close();
       connection = null;
@@ -175,11 +199,13 @@ function geoError(error) {
   else status('GPS 응답 시간 초과입니다. 위치 서비스와 신호를 확인한 뒤 다시 누르세요.');
 }
 
-function start() {
+async function start() {
   if (!addressInput.value.trim()) return status('Tailcat 주소가 없습니다. QR을 다시 스캔하세요.');
   if (!navigator.geolocation) return status('이 브라우저는 GPS를 지원하지 않습니다. Safari 또는 Chrome에서 열어 주세요.');
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   running = true;
+  const startGeneration = ++generation;
+  sessionId = crypto.randomUUID();
   pendingPosition = null;
   lastFixAt = 0;
   lastFixTimestamp = null;
@@ -187,7 +213,19 @@ function start() {
   lastFixLongitude = null;
   updateToggle();
   updateMetrics();
-  status('위치 확인 중… 권한 팝업이 없다면 이미 허용된 상태일 수 있습니다.');
+  status('Tailcat 연결 중…');
+  try {
+    if (!await post('/api/claim', '', startGeneration)) return;
+  } catch (error) {
+    if (generation !== startGeneration) return;
+    if (connection) connection.close();
+    connection = null;
+    stop();
+    status('연결 실패: ' + (error.message || String(error)));
+    return;
+  }
+  if (!running || generation !== startGeneration) return;
+  status('송신권 확보 · 위치 확인 중… 권한 팝업이 없다면 이미 허용된 상태일 수 있습니다.');
   navigator.geolocation.getCurrentPosition(position => {
     if (!running) return;
     onPosition(position);
@@ -199,11 +237,14 @@ function start() {
 
 function stop() {
   running = false;
+  generation++;
+  sessionId = null;
   pendingPosition = null;
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   watchId = null;
   if (connection) connection.close();
   connection = null;
+  connecting = null;
   updateToggle();
   status('중지됨');
   updateMetrics();
