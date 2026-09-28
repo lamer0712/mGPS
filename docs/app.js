@@ -1,4 +1,5 @@
 const addressInput = document.getElementById('addr');
+const toggleButton = document.getElementById('toggle');
 const statusView = document.getElementById('s');
 const latitudeView = document.getElementById('lat');
 const longitudeView = document.getElementById('lon');
@@ -12,24 +13,24 @@ let connecting = null;
 let wasmReady = null;
 let responseBuffer = new Uint8Array(0);
 let sending = false;
-let latestPosition = null;
+let pendingPosition = null;
 let running = false;
-let sendTimer = null;
 let lastFixAt = 0;
-let lastAttemptAt = 0;
 let lastSuccessAt = 0;
+let lastFixTimestamp = null;
+let lastFixLatitude = null;
+let lastFixLongitude = null;
 let sentCount = 0;
 let connectCount = 0;
 let lastLatency = 0;
 const encoder = new TextEncoder();
-const SEND_INTERVAL_MS = 1000;
-const MAX_FIX_AGE_MS = 15000;
 
 function status(message) { statusView.textContent = message; }
+function updateToggle() { toggleButton.textContent = running ? '정지' : '전송 시작'; }
 function updateMetrics() {
-  const age = lastFixAt ? ((Date.now() - lastFixAt) / 1000).toFixed(1) + '초' : '-';
-  const since = lastSuccessAt ? ((Date.now() - lastSuccessAt) / 1000).toFixed(1) + '초' : '-';
-  metricsView.textContent = `GPS 수신 후 ${age} · 마지막 전송 후 ${since}\n전송 ${sentCount}회 · Tailcat 연결 ${connectCount}회 · 응답 ${lastLatency}ms`;
+  const fixTime = lastFixAt ? new Date(lastFixAt).toLocaleTimeString() : '-';
+  const sendTime = lastSuccessAt ? new Date(lastSuccessAt).toLocaleTimeString() : '-';
+  metricsView.textContent = `마지막 GPS 수신 ${fixTime} · 마지막 전송 ${sendTime}\n전송 ${sentCount}회 · Tailcat 연결 ${connectCount}회 · 응답 ${lastLatency}ms`;
 }
 
 function loadTailcat() {
@@ -115,7 +116,12 @@ async function readResponse(stream) {
 }
 
 function onPosition(position) {
-  latestPosition = position;
+  if (!running) return;
+  if (position.timestamp === lastFixTimestamp && position.coords.latitude === lastFixLatitude && position.coords.longitude === lastFixLongitude) return;
+  lastFixTimestamp = position.timestamp;
+  lastFixLatitude = position.coords.latitude;
+  lastFixLongitude = position.coords.longitude;
+  pendingPosition = position;
   lastFixAt = Date.now();
   latitudeView.textContent = position.coords.latitude.toFixed(6);
   longitudeView.textContent = position.coords.longitude.toFixed(6);
@@ -124,17 +130,12 @@ function onPosition(position) {
 }
 
 async function transmit() {
-  if (!running || sending || !latestPosition) return;
-  const now = Date.now();
-  if (now - lastAttemptAt < SEND_INTERVAL_MS - 100) return;
-  if (now - lastFixAt > MAX_FIX_AGE_MS) {
-    status('휴대폰 GPS가 15초 넘게 갱신되지 않아 전송을 멈췄습니다. 위치 서비스를 확인하세요.');
-    return;
-  }
-  lastAttemptAt = now;
+  if (!running || sending || !pendingPosition) return;
   sending = true;
   try {
-      const current = latestPosition;
+    while (running && pendingPosition) {
+      const current = pendingPosition;
+      pendingPosition = null;
       const coords = current.coords;
       const body = JSON.stringify({
         lat: coords.latitude, lon: coords.longitude,
@@ -149,19 +150,22 @@ async function transmit() {
       const request = `POST /api/location HTTP/1.1\r\nHost: mockgps\r\nContent-Type: application/json\r\nContent-Length: ${bodyBytes.length}\r\nConnection: keep-alive\r\n\r\n${body}`;
       await stream.write(encoder.encode(request));
       await readResponse(stream);
+      if (!running) return;
       lastLatency = Date.now() - started;
       lastSuccessAt = Date.now();
       sentCount++;
       status('전송 완료 · ' + new Date().toLocaleTimeString());
       updateMetrics();
+    }
   } catch (error) {
     if (!error.keepConnection) {
       if (connection) connection.close();
       connection = null;
     }
-    status('전송 실패: ' + (error.message || String(error)) + ' · 1초 후 재시도합니다.');
+    if (running) status('전송 실패: ' + (error.message || String(error)) + ' · 다음 GPS 수신 시 다시 전송합니다.');
   } finally {
     sending = false;
+    if (running && pendingPosition) transmit();
   }
 }
 
@@ -175,12 +179,13 @@ function start() {
   if (!addressInput.value.trim()) return status('Tailcat 주소가 없습니다. QR을 다시 스캔하세요.');
   if (!navigator.geolocation) return status('이 브라우저는 GPS를 지원하지 않습니다. Safari 또는 Chrome에서 열어 주세요.');
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-  if (sendTimer !== null) clearInterval(sendTimer);
   running = true;
-  latestPosition = null;
+  pendingPosition = null;
   lastFixAt = 0;
-  lastAttemptAt = 0;
-  sendTimer = setInterval(() => { updateMetrics(); transmit(); }, SEND_INTERVAL_MS);
+  lastFixTimestamp = null;
+  lastFixLatitude = null;
+  lastFixLongitude = null;
+  updateToggle();
   updateMetrics();
   status('위치 확인 중… 권한 팝업이 없다면 이미 허용된 상태일 수 있습니다.');
   navigator.geolocation.getCurrentPosition(position => {
@@ -189,18 +194,19 @@ function start() {
     watchId = navigator.geolocation.watchPosition(onPosition, geoError, {
       enableHighAccuracy: true, maximumAge: 0, timeout: 15000
     });
-  }, geoError, {enableHighAccuracy: false, maximumAge: 5000, timeout: 15000});
+  }, error => { if (running) { stop(); geoError(error); } }, {enableHighAccuracy: false, maximumAge: 5000, timeout: 15000});
 }
 
 function stop() {
   running = false;
-  latestPosition = null;
-  if (sendTimer !== null) clearInterval(sendTimer);
-  sendTimer = null;
+  pendingPosition = null;
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   watchId = null;
   if (connection) connection.close();
   connection = null;
+  updateToggle();
   status('중지됨');
   updateMetrics();
 }
+
+function toggleTransmission() { if (running) stop(); else start(); }
