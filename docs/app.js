@@ -4,6 +4,7 @@ const statusView = document.getElementById('s');
 const latitudeView = document.getElementById('lat');
 const longitudeView = document.getElementById('lon');
 const metricsView = document.getElementById('metrics');
+const wakeView = document.getElementById('wake');
 const query = new URLSearchParams(location.search);
 addressInput.value = query.get('addr') || '';
 
@@ -25,10 +26,57 @@ let lastFixLongitude = null;
 let sentCount = 0;
 let connectCount = 0;
 let lastLatency = 0;
+let wakeLock = null;
+let wakeRequest = null;
 const encoder = new TextEncoder();
 
 function status(message) { statusView.textContent = message; }
 function updateToggle() { toggleButton.textContent = running ? '정지' : '전송 시작'; }
+function updateWakeStatus(message) { wakeView.textContent = message; }
+async function keepScreenOn() {
+  if (!running || document.visibilityState !== 'visible' || wakeLock || wakeRequest) return;
+  if (!navigator.wakeLock?.request) {
+    updateWakeStatus('화면 유지 미지원 · 휴대폰의 자동 잠금을 직접 해제해 주세요.');
+    return;
+  }
+  updateWakeStatus('화면 유지 요청 중…');
+  const requestGeneration = generation;
+  let request;
+  try {
+    request = navigator.wakeLock.request('screen');
+    wakeRequest = request;
+    const lock = await request;
+    if (!running || generation !== requestGeneration || document.visibilityState !== 'visible') {
+      await lock.release();
+      return;
+    }
+    wakeLock = lock;
+    updateWakeStatus('화면 유지 켜짐 · 이 페이지를 열어 두세요.');
+    lock.addEventListener('release', () => {
+      if (wakeLock !== lock) return;
+      wakeLock = null;
+      if (running) updateWakeStatus(document.visibilityState === 'visible'
+        ? '화면 유지가 해제됐습니다. 절전 모드 등을 확인해 주세요.'
+        : '다른 앱으로 전환됨 · 화면 유지 해제, GPS 전송이 멈출 수 있습니다.');
+    });
+  } catch (_) {
+    if (running && generation === requestGeneration) updateWakeStatus('화면 유지를 허용받지 못했습니다. 절전 모드 또는 브라우저 설정을 확인해 주세요.');
+  } finally {
+    if (wakeRequest === request) wakeRequest = null;
+  }
+}
+function releaseScreen() {
+  const lock = wakeLock;
+  wakeLock = null;
+  wakeRequest = null;
+  if (lock) lock.release().catch(() => {});
+  updateWakeStatus('화면 유지 꺼짐');
+}
+document.addEventListener('visibilitychange', () => {
+  if (!running) return;
+  if (document.visibilityState === 'visible') keepScreenOn();
+  else updateWakeStatus('다른 앱으로 전환됨 · 화면 유지 해제, GPS 전송이 멈출 수 있습니다.');
+});
 function updateMetrics() {
   const fixTime = lastFixAt ? new Date(lastFixAt).toLocaleTimeString() : '-';
   const sendTime = lastSuccessAt ? new Date(lastSuccessAt).toLocaleTimeString() : '-';
@@ -213,6 +261,7 @@ async function start() {
   lastFixLongitude = null;
   updateToggle();
   updateMetrics();
+  keepScreenOn();
   status('Tailcat 연결 중…');
   try {
     if (!await post('/api/claim', '', startGeneration)) return;
@@ -245,6 +294,7 @@ function stop() {
   if (connection) connection.close();
   connection = null;
   connecting = null;
+  releaseScreen();
   updateToggle();
   status('중지됨');
   updateMetrics();
