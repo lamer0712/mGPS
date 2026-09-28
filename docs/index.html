@@ -1,9 +1,9 @@
 <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mock GPS Sender</title>
 <style>body{font:18px sans-serif;max-width:620px;margin:24px auto;padding:0 16px;background:#101318;color:#fff}input,button{box-sizing:border-box;width:100%;font-size:18px;padding:12px;margin:6px 0}button{font-size:20px}#s{color:#8bc34a;white-space:pre-wrap}</style>
-<h1>Mock GPS 전송</h1><p>AAOS 앱에 표시된 Tailcat 주소를 입력하세요.</p>
-<input id="addr" placeholder="tc... 주소"><input id="port" type="number" value="8787">
+<h1>mGPS 전송</h1><p>AAOS 앱의 QR을 스캔하면 고정 Tailcat 주소가 자동 입력됩니다. 포트는 8787로 고정입니다.</p>
+<input id="addr" placeholder="tc... 주소">
 <button onclick="start()">GPS 권한 허용 후 전송 시작</button><button onclick="stop()">중지</button><p id="s">준비 중…</p>
 <p>위도 <span id="lat">-</span> · 경도 <span id="lon">-</span></p>
 <p id="metrics" style="white-space:pre-wrap;font-size:15px">GPS 수신 후 - · 마지막 전송 후 -<br>전송 0회 · Tailcat 연결 0회 · 응답 0ms</p>
 <p style="font-size:14px">새 GPS 좌표가 없어도 최근 위치를 최대 15초 동안 1초마다 전송합니다.</p>
-<script src="wasm_exec.js"></script><script src="app.js?v=7"></script>
+<script src="wasm_exec.js"></script><script src="app.js?v=8"></script>

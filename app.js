@@ -1,12 +1,10 @@
 const addressInput = document.getElementById('addr');
-const portInput = document.getElementById('port');
 const statusView = document.getElementById('s');
 const latitudeView = document.getElementById('lat');
 const longitudeView = document.getElementById('lon');
 const metricsView = document.getElementById('metrics');
 const query = new URLSearchParams(location.search);
 addressInput.value = query.get('addr') || '';
-portInput.value = query.get('port') || '8787';
 
 let watchId = null;
 let connection = null;
@@ -63,7 +61,7 @@ async function getConnection() {
   if (!connecting) {
     connecting = tailcatDial({
       addr: addressInput.value.trim(),
-      port: Number(portInput.value) || 8787,
+      port: 8787,
       derpMapURL: 'https://tailcat.dev/derpmap.json'
     }).then(result => {
       connection = result;
